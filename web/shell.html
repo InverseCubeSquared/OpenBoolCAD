@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>OpenBoolCAD</title>
+<!-- Inline, so the page never asks the server for a favicon it does not have. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='2' y='2' width='9' height='9' fill='%23aeb9c4'/><rect x='5' y='5' width='9' height='9' fill='none' stroke='%23222'/></svg>">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #f0f0f0;
+    font-family: system-ui, sans-serif;
+  }
+  /* The canvas is the whole application; platform.cpp reads its CSS size back
+     each frame and resizes the SDL window to match. */
+  canvas#canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    border: 0;
+    outline: none;
+  }
+  #status {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    transform: translateY(-50%);
+    text-align: center;
+    color: #444;
+    font-size: 15px;
+    pointer-events: none;
+  }
+  #status.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<canvas id="canvas" tabindex="-1"></canvas>
+<div id="status">Loading OpenBoolCAD...</div>
+
+<script type="text/javascript">
+var statusLine = document.getElementById('status');
+var canvas = document.getElementById('canvas');
+
+/* Right drag orbits the workspace, so the page menu must not eat it. */
+canvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+/* The canvas only receives key events while focused, and a fresh page has
+   focus on the body. */
+canvas.addEventListener('mousedown', function() { canvas.focus(); });
+window.addEventListener('load', function() { canvas.focus(); });
+
+var Module = {
+  canvas: canvas,
+  print: function(text) { console.log(text); },
+  printErr: function(text) { console.error(text); },
+  setStatus: function(text) {
+    if (!statusLine) return;
+    if (text) {
+      statusLine.textContent = text;
+      statusLine.classList.remove('hidden');
+    } else {
+      statusLine.classList.add('hidden');
+    }
+  },
+  onRuntimeInitialized: function() {
+    Module.setStatus('');
+  }
+};
+
+/* Backing store starts at the window size; the C side keeps it there. */
+function sizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+sizeCanvas();
+window.addEventListener('resize', sizeCanvas);
+</script>
+
+{{{ SCRIPT }}}
+
+</body>
+</html>

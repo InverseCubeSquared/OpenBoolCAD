@@ -1,0 +1,4 @@
+manifold v3.5.2
+commit 11235e6b8ebea2dbed8aec4285685aafd3d95667
+upstream https://github.com/elalish/manifold
+vendored: 3D core only (src/cross_section removed, needs Clipper2)
