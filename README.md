@@ -2,6 +2,8 @@
 
 The open source boolean-based computer aided design software.
 
+![A screenshot of the program](screenshot.png)
+
 ## Dependencies
 
 This project requires SDL2, OpenGL headers and the GNU C compiler for desktop builds, additionally requires emscripten sdk for WASM builds.
