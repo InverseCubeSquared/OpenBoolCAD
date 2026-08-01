@@ -49,6 +49,7 @@ OpenBoolCAD builds parts out of volumes. Every object is either solid or a hole,
 | `Esc` | Clear the selection. |
 | `Del` | Delete the selection. |
 | `I` | Invert polarity: solid becomes hole, hole becomes solid. |
+| `C` | Colour the selection. On a group it colours everything inside. |
 
 ### Moving, scaling and rotating
 
@@ -65,13 +66,13 @@ A selection shows a box with grips on it. Which grips appear depends on the mode
 | Left / right click (bevel) | Pick an edge, or drop one again. |
 | `Shift + B` | Set the bevel amount and how round it is, then apply. |
 | `Shift` + drag a ring | Snap the rotation to 15 degrees. |
-| `Shift` + click (rotate mode) | Pin the rotation origin to that point. `Esc` unpins it. |
+| `Shift` + right click (rotate mode) | Pin the rotation origin to that point. `Esc` unpins it. |
 | `[` and `]` | Halve or double the snap grid. |
 | `Esc` | Backs out one step at a time: plane picking, then the align or mirror tool, then a pinned rotation origin, then the transform mode, then the selection. |
 
 ### Bevelling
 
-Select one object and press `B`: every edge that has two faces meeting at an angle lights up. Left click adds an edge to the set, right click takes it out again, and `Shift+B` opens the settings. One segment gives a chamfer, more round it off. An outside corner is cut away and an inside one is filled in - which of the two an edge needs is worked out from its faces, not asked. Picking a different object in the tree while the mode is up switches to its edges.
+Select one object and press B: every edge that has two faces meeting at an angle lights up. Left click adds an edge to the set, right click takes it out again, and Shift+B opens the settings. One segment gives a chamfer, more round it off. An outside corner is cut away and an inside one is filled in - which of the two an edge needs is worked out from its faces, not asked. Picking a different object in the tree while the mode is up switches to its edges.
 
 ### The editing plane
 
