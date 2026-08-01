@@ -28,21 +28,82 @@ static manifold::Manifold indexed_to_manifold(const IndexedMesh &in) {
     return manifold::Manifold(gl);
 }
 
-static Mesh manifold_to_mesh(const manifold::Manifold &man) {
+/*
+ * Collapses anything finer than the grid mesh_repair welds on.
+ *
+ * Manifold works in double and its own tolerance is finer than ours, so a
+ * perfectly good result can carry edges a few nanometres long. They survive the
+ * trip out through float, and then the very next mesh_repair welds their
+ * endpoints together, drops the triangles that just went degenerate, and hands
+ * back a mesh with holes in it - a boolean result that no longer accepts a
+ * boolean. Collapsing them here, while there is still a Manifold to do it
+ * exactly, is what keeps one operation's output usable as the next one's input.
+ *
+ * A tolerance this small is three orders of magnitude under any feature anyone
+ * models, so nothing visible moves. Where a coarser pass has already run - the
+ * thin wall cleanup in csg_merge - this is a no-op.
+ */
+static manifold::Manifold settle_to_weld_grid(const manifold::Manifold &man) {
+    if (man.GetTolerance() >= (double)OBC_WELD_MM) return man;
+    return man.SetTolerance((double)OBC_WELD_MM).Simplify((double)OBC_WELD_MM);
+}
+
+/* Union-find over the merge vectors, which are "simply a union" per Manifold's
+ * own documentation and so can chain. */
+static uint32_t merge_root(std::vector<uint32_t> *parent, uint32_t v) {
+    while ((*parent)[v] != v) {
+        (*parent)[v] = (*parent)[(*parent)[v]];
+        v = (*parent)[v];
+    }
+    return v;
+}
+
+static Mesh manifold_to_mesh(const manifold::Manifold &raw) {
+    manifold::Manifold man = settle_to_weld_grid(raw);
     manifold::MeshGL64 gl = man.GetMeshGL64();
 
-    IndexedMesh indexed;
     size_t vert_count = gl.vertProperties.size() / gl.numProp;
-    indexed.positions.reserve(vert_count);
-    for (size_t v = 0; v < vert_count; ++v) {
-        size_t o = v * gl.numProp;
-        indexed.positions.push_back(vec3((float)gl.vertProperties[o + 0],
-                                         (float)gl.vertProperties[o + 1],
-                                         (float)gl.vertProperties[o + 2]));
+
+    /*
+     * Manifold hands back a *rendering* vertex list, not a topological one: a
+     * vertex where two of its input meshes meet comes back duplicated, once per
+     * run, and mergeFromVert/mergeToVert say which copies are really the same
+     * point. Ignoring them leaves every seam of the boolean looking like an open
+     * boundary, and mesh_add_feature_edges draws exactly those - so a bevelled
+     * part came back with black outline scribbled across faces that are flat.
+     * The geometry was never wrong; the topology handed to us was incomplete.
+     */
+    std::vector<uint32_t> parent(vert_count);
+    for (size_t v = 0; v < vert_count; ++v) parent[v] = (uint32_t)v;
+
+    size_t merges = gl.mergeFromVert.size();
+    if (gl.mergeToVert.size() < merges) merges = gl.mergeToVert.size();
+    for (size_t k = 0; k < merges; ++k) {
+        uint32_t from = (uint32_t)gl.mergeFromVert[k];
+        uint32_t to = (uint32_t)gl.mergeToVert[k];
+        if (from >= vert_count || to >= vert_count) continue;
+        uint32_t ra = merge_root(&parent, from);
+        uint32_t rb = merge_root(&parent, to);
+        if (ra != rb) parent[ra] = rb;
     }
+
+    IndexedMesh indexed;
+    std::vector<uint32_t> slot(vert_count, 0xffffffffu);
+    indexed.positions.reserve(vert_count);
     indexed.tris.reserve(gl.triVerts.size());
+
     for (size_t i = 0; i < gl.triVerts.size(); ++i) {
-        indexed.tris.push_back((uint32_t)gl.triVerts[i]);
+        uint32_t v = (uint32_t)gl.triVerts[i];
+        if (v >= vert_count) continue;
+        uint32_t root = merge_root(&parent, v);
+        if (slot[root] == 0xffffffffu) {
+            size_t o = (size_t)root * gl.numProp;
+            slot[root] = (uint32_t)indexed.positions.size();
+            indexed.positions.push_back(vec3((float)gl.vertProperties[o + 0],
+                                             (float)gl.vertProperties[o + 1],
+                                             (float)gl.vertProperties[o + 2]));
+        }
+        indexed.tris.push_back(slot[root]);
     }
 
     return mesh_from_indexed(indexed);
@@ -109,9 +170,15 @@ static bool collect(const std::vector<Mesh> &meshes, std::vector<manifold::Manif
     return true;
 }
 
-bool csg_merge(const std::vector<Mesh> &positives,
-               const std::vector<Mesh> &negatives,
-               Mesh *out, std::string *error, std::string *repair_note) {
+/*
+ * The union-then-subtract itself, shared by the merge and the plain boolean.
+ * Fills "result" and returns false with a reason when an input or the operation
+ * did not come out a solid.
+ */
+static bool combine(const std::vector<Mesh> &positives,
+                    const std::vector<Mesh> &negatives,
+                    manifold::Manifold *result, std::string *error,
+                    std::string *repair_note) {
     if (positives.empty()) {
         if (error) *error = "Merge needs at least one positive volume.";
         return false;
@@ -131,17 +198,42 @@ bool csg_merge(const std::vector<Mesh> &positives,
         return false;
     }
 
-    manifold::Manifold result = manifold::Manifold::BatchBoolean(pos, manifold::OpType::Add);
+    manifold::Manifold r = manifold::Manifold::BatchBoolean(pos, manifold::OpType::Add);
     if (!neg.empty()) {
         manifold::Manifold cut = manifold::Manifold::BatchBoolean(neg, manifold::OpType::Add);
-        result = result - cut;
+        r = r - cut;
     }
 
-    manifold::Manifold::Error err = result.Status();
+    manifold::Manifold::Error err = r.Status();
     if (err != manifold::Manifold::Error::NoError) {
         if (error) *error = std::string("Merge failed: ") + manifold_error_text(err);
         return false;
     }
+
+    *result = r;
+    return true;
+}
+
+bool csg_boolean(const std::vector<Mesh> &positives,
+                 const std::vector<Mesh> &negatives,
+                 Mesh *out, std::string *error) {
+    manifold::Manifold result;
+    if (!combine(positives, negatives, &result, error, NULL)) return false;
+
+    if (result.IsEmpty()) {
+        if (error) *error = "The operation produced an empty volume.";
+        return false;
+    }
+
+    *out = manifold_to_mesh(result);
+    return true;
+}
+
+bool csg_merge(const std::vector<Mesh> &positives,
+               const std::vector<Mesh> &negatives,
+               Mesh *out, std::string *error, std::string *repair_note) {
+    manifold::Manifold result;
+    if (!combine(positives, negatives, &result, error, repair_note)) return false;
 
     /*
      * Drop leftover walls thinner than OBC_MIN_WALL_MM.
@@ -162,7 +254,7 @@ bool csg_merge(const std::vector<Mesh> &positives,
 
     result = result.SetTolerance(OBC_MIN_WALL_MM).Simplify(OBC_MIN_WALL_MM);
 
-    err = result.Status();
+    manifold::Manifold::Error err = result.Status();
     if (err != manifold::Manifold::Error::NoError) {
         if (error) *error = std::string("Thin wall cleanup failed: ") + manifold_error_text(err);
         return false;

@@ -44,6 +44,10 @@ void undo_record(UndoStack *u, const Scene &scene, const char *label) {
     u->future.clear();
 }
 
+void undo_drop_last(UndoStack *u) {
+    if (!u->past.empty()) u->past.pop_back();
+}
+
 bool undo_step_back(UndoStack *u, Scene *scene, std::string *label) {
     if (u->past.empty()) return false;
 

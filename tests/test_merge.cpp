@@ -683,6 +683,239 @@ static void test_bevel(void) {
           "bevelling nothing is refused");
 }
 
+/* A bevel is only worth anything if the part still takes a boolean afterwards,
+ * which is what used to fail: the result came back with a few hundred open
+ * edges and every later merge refused it. */
+static void bevel_survives_a_boolean(const Mesh &m, const char *what) {
+    Mesh probe = mesh_make_cube(4.0f);
+    for (size_t i = 0; i < probe.vertices.size(); ++i) {
+        probe.vertices[i].x += 3.0f;
+        probe.vertices[i].y += 3.0f;
+        probe.vertices[i].z += 3.0f;
+    }
+
+    std::vector<Mesh> pos, neg;
+    pos.push_back(m);
+    neg.push_back(probe);
+
+    Mesh out;
+    std::string error, note;
+    bool ok = csg_merge(pos, neg, &out, &error, &note);
+
+    char label[220];
+    snprintf(label, sizeof(label), "the bevelled %s still merges%s%s", what,
+             ok ? "" : ": ", ok ? "" : error.c_str());
+    check(ok, label);
+}
+
+/*
+ * Curved and merged shapes, which is where one cutter per triangle edge came
+ * apart. Three things are being checked, and they are the same three things:
+ * a rim is one edge and not thirty-two, the sweep across it is a solid, and the
+ * solid is still one a boolean will accept.
+ */
+static void test_bevel_complex(void) {
+    printf("bevel on curved and merged shapes\n");
+
+    char label[220];
+
+    /* A rim: the facet seams down the side are a tessellation, not edges, and
+     * the two rims each arrive as one ring. */
+    Mesh cyl = mesh_make_cylinder(20.0f, 20.0f, 32);
+    std::vector<BevelEdge> rims;
+    bevel_collect_edges(cyl, &rims);
+
+    snprintf(label, sizeof(label), "a cylinder offers %d edges, not one per facet",
+             (int)rims.size());
+    check(rims.size() == 2, label);
+
+    bool rings = rims.size() == 2;
+    for (size_t i = 0; i < rims.size(); ++i) {
+        if (!rims[i].closed || rims[i].points.size() != 32) rings = false;
+    }
+    check(rings, "each rim is one closed ring of 32 points");
+
+    std::vector<int> both;
+    for (size_t i = 0; i < rims.size(); ++i) both.push_back((int)i);
+
+    float r = 1.5f;
+    Mesh rounded;
+    std::string error;
+    if (bevel_apply(cyl, rims, both, r, 8, &rounded, &error)) {
+        IndexedMesh indexed;
+        MeshRepairReport report;
+        check(mesh_repair(rounded, &indexed, &report), "the rounded cylinder is a closed solid");
+
+        /* A quarter cylinder of radius r taken off each rim, along the
+         * perimeter of the 32 sided prism the mesh actually is. */
+        float perimeter = 32.0f * 2.0f * 10.0f * sinf(3.14159265f / 32.0f);
+        float expected = 2.0f * (1.0f - 3.14159265f / 4.0f) * r * r * perimeter;
+        float removed = mesh_volume(cyl) - mesh_volume(rounded);
+        snprintf(label, sizeof(label), "both rims removed %.2f mm3, expected about %.2f",
+                 removed, expected);
+        check(fabsf(removed - expected) < expected * 0.05f, label);
+
+        bevel_survives_a_boolean(rounded, "cylinder");
+    } else {
+        check(false, (std::string("rim bevel: ") + error).c_str());
+    }
+
+    /*
+     * A boolean result. Its flat faces come back split into many triangles, so
+     * one physical edge arrives as a run of collinear pieces; chaining them is
+     * what stops each piece's cutter overlapping the next in a film a few
+     * microns thick.
+     */
+    std::vector<Mesh> pos;
+    Mesh lump = mesh_make_cylinder(20.0f, 20.0f, 24);
+    for (size_t i = 0; i < lump.vertices.size(); ++i) lump.vertices[i].x += 10.0f;
+    pos.push_back(mesh_make_cube(20.0f));
+    pos.push_back(lump);
+
+    Mesh merged;
+    std::string merge_error, note;
+    if (!csg_merge(pos, std::vector<Mesh>(), &merged, &merge_error, &note)) {
+        check(false, "the cube and cylinder would not merge");
+        return;
+    }
+
+    std::vector<BevelEdge> edges;
+    bevel_collect_edges(merged, &edges);
+
+    /* Far fewer edges than the mesh has triangle creases, because the collinear
+     * runs came back as single edges. */
+    snprintf(label, sizeof(label), "the merged shape offers %d edges over %d triangles",
+             (int)edges.size(), (int)(merged.vertices.size() / 3));
+    check(!edges.empty() && edges.size() < merged.vertices.size() / 9, label);
+
+    std::vector<int> all;
+    for (size_t i = 0; i < edges.size(); ++i) all.push_back((int)i);
+
+    Mesh bevelled;
+    if (bevel_apply(merged, edges, all, 1.0f, 8, &bevelled, &error)) {
+        IndexedMesh indexed;
+        MeshRepairReport report;
+        check(mesh_repair(bevelled, &indexed, &report),
+              "the bevelled merge result is a closed solid");
+        check(report.removed_degenerate == 0 && report.open_edges == 0 &&
+              report.nonmanifold_edges == 0,
+              "it needs no repairing, so the next operation gets a clean input");
+
+        bevel_survives_a_boolean(bevelled, "merge result");
+
+        /* And it can be bevelled again, which is the edit after the edit that
+         * used to be where the damage finally showed up. */
+        std::vector<BevelEdge> again;
+        bevel_collect_edges(bevelled, &again);
+        snprintf(label, sizeof(label), "a second pass finds %d edges to work on",
+                 (int)again.size());
+        check(!again.empty(), label);
+    } else {
+        check(false, (std::string("merged shape bevel: ") + error).c_str());
+    }
+
+    /* A concave fillet has to add the volume the arithmetic says, not a trace
+     * of it: filling on the wrong side of the corner still gains a little. */
+    std::vector<Mesh> arms;
+    Mesh arm = mesh_make_cube(20.0f);
+    for (size_t v = 0; v < arm.vertices.size(); ++v) {
+        arm.vertices[v].x += 20.0f;
+        arm.vertices[v].z -= 10.0f;
+    }
+    arms.push_back(mesh_make_cube(20.0f));
+    arms.push_back(arm);
+
+    Mesh shape;
+    if (csg_merge(arms, std::vector<Mesh>(), &shape, &merge_error, &note)) {
+        std::vector<BevelEdge> l_edges;
+        bevel_collect_edges(shape, &l_edges);
+
+        std::vector<int> inside;
+        float length = 0.0f;
+        for (size_t i = 0; i < l_edges.size(); ++i) {
+            if (l_edges[i].convex) continue;
+            inside.push_back((int)i);
+            for (size_t k = 0; k + 1 < l_edges[i].points.size(); ++k) {
+                length += vec3_length(vec3_sub(l_edges[i].points[k + 1],
+                                               l_edges[i].points[k]));
+            }
+        }
+
+        float fillet_r = 1.5f;
+        Mesh filled;
+        if (bevel_apply(shape, l_edges, inside, fillet_r, 8, &filled, &error)) {
+            float expected = (1.0f - 3.14159265f / 4.0f) * fillet_r * fillet_r * length;
+            float gained = mesh_volume(filled) - mesh_volume(shape);
+            snprintf(label, sizeof(label),
+                     "a concave fillet added %.2f mm3 over %.0f mm, expected about %.2f",
+                     gained, length, expected);
+            check(fabsf(gained - expected) < expected * 0.08f, label);
+        } else {
+            check(false, (std::string("concave fillet: ") + error).c_str());
+        }
+    }
+}
+
+/*
+ * A boolean result must not come back with outline drawn across faces that are
+ * flat.
+ *
+ * Manifold hands back a rendering vertex list, in which a vertex where two of
+ * its inputs meet is duplicated once per input; the merge vectors say which
+ * copies are the same point. Ignore them and every seam of the boolean looks
+ * like an open boundary, so the outline pass strokes it - a bevelled part came
+ * back with black scribble over its flat top, which reads as leftover material
+ * and is not.
+ */
+static void test_boolean_outline(void) {
+    printf("boolean results keep a clean outline\n");
+
+    std::vector<Mesh> pos;
+    Mesh left = mesh_make_cube(20.0f);
+    Mesh right = mesh_make_cube(20.0f);
+    for (size_t i = 0; i < right.vertices.size(); ++i) right.vertices[i].x += 20.0f;
+    pos.push_back(left);
+    pos.push_back(right);
+
+    Mesh box;
+    std::string error, note;
+    if (!csg_merge(pos, std::vector<Mesh>(), &box, &error, &note)) {
+        check(false, error.c_str());
+        return;
+    }
+
+    /* Two cubes side by side make one 40 x 20 x 20 box, so every outline
+     * segment has to run along one of its twelve edges: two of the three
+     * coordinates sit on a face of the bounding box at both ends. */
+    Bounds b = mesh_bounds(box);
+    int stray = 0;
+    for (size_t i = 0; i + 1 < box.edges.size(); i += 2) {
+        int pinned = 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            float p = axis == 0 ? box.edges[i].x : (axis == 1 ? box.edges[i].y : box.edges[i].z);
+            float q = axis == 0 ? box.edges[i + 1].x
+                                : (axis == 1 ? box.edges[i + 1].y : box.edges[i + 1].z);
+            float lo = axis == 0 ? b.min.x : (axis == 1 ? b.min.y : b.min.z);
+            float hi = axis == 0 ? b.max.x : (axis == 1 ? b.max.y : b.max.z);
+            bool on_face = (fabsf(p - lo) < 1e-3f && fabsf(q - lo) < 1e-3f) ||
+                           (fabsf(p - hi) < 1e-3f && fabsf(q - hi) < 1e-3f);
+            if (on_face) pinned += 1;
+        }
+        if (pinned < 2) stray += 1;
+    }
+
+    char label[160];
+    snprintf(label, sizeof(label), "%d outline segments, %d of them off the box edges",
+             (int)(box.edges.size() / 2), stray);
+    check(stray == 0 && !box.edges.empty(), label);
+
+    /* And the seam welded, so the next repair pass has nothing to fix. */
+    IndexedMesh indexed;
+    MeshRepairReport report;
+    check(mesh_repair(box, &indexed, &report) && report.open_edges == 0,
+          "the merged box is closed with no boundary left at the seam");
+}
+
 /* Every polyhedron has to come out a closed solid with the face count the
  * dialog promises, at the size that was asked for. */
 static void test_polyhedron(void) {
@@ -1104,6 +1337,99 @@ static void test_project_roundtrip(void) {
     }
 }
 
+/*
+ * Object colour: the defaults, applying it down a subtree, and the round trip.
+ *
+ * The round trip matters most. Colour is the first field added to the node
+ * table since the format shipped, so it is also the check that adding one does
+ * not break reading a file written before it existed.
+ */
+static void test_color(void) {
+    printf("object colour\n");
+
+    Scene s;
+    scene_new_empty(&s);
+    int root = s.roots.empty() ? OBC_NO_NODE : s.roots[0];
+
+    int solid = scene_add_object(&s, root, "Solid", mesh_make_cube(20.0f), POLARITY_POSITIVE);
+    int hole = scene_add_object(&s, root, "Hole", mesh_make_cube(10.0f), POLARITY_NEGATIVE);
+
+    /* Defaults follow the polarity, so nothing looks different until someone
+     * actually picks a colour. */
+    const SceneNode *sn = scene_node(&s, solid);
+    const SceneNode *hn = scene_node(&s, hole);
+    Vec3 want_solid = OBC_COLOR_SOLID;
+    Vec3 want_hole = OBC_COLOR_HOLE;
+    check(sn && vec3_length(vec3_sub(sn->color, want_solid)) < 1e-6f,
+          "a new solid gets the solid default");
+    check(hn && vec3_length(vec3_sub(hn->color, want_hole)) < 1e-6f,
+          "a new hole gets the grey it draws transparent in");
+
+    /* A group has no mesh, so colouring one has to reach what is inside it. */
+    int group = scene_add_group(&s, root, "Painted");
+    int inner = scene_add_object(&s, group, "Inner", mesh_make_cube(5.0f), POLARITY_POSITIVE);
+
+    Vec3 red = vec3(0.85f, 0.30f, 0.28f);
+    s.selection.clear();
+    s.selection.push_back(group);
+    int touched = scene_set_selection_color(&s, red);
+
+    char label[160];
+    snprintf(label, sizeof(label), "colouring a group reached %d object%s inside it",
+             touched, touched == 1 ? "" : "s");
+    check(touched == 1, label);
+
+    const SceneNode *in = scene_node(&s, inner);
+    check(in && vec3_length(vec3_sub(in->color, red)) < 1e-6f, "the child took the colour");
+
+    /* And it left everything outside the selection alone. */
+    sn = scene_node(&s, solid);
+    check(sn && vec3_length(vec3_sub(sn->color, want_solid)) < 1e-6f,
+          "an unselected object keeps its own colour");
+
+    /* What the picker opens on. */
+    Vec3 shown;
+    check(scene_selection_color(&s, &shown) && vec3_length(vec3_sub(shown, red)) < 1e-6f,
+          "the picker opens on the group's own colour");
+
+    s.selection.clear();
+    s.selection.push_back(solid);
+    Vec3 blue = vec3(0.35f, 0.55f, 0.85f);
+    scene_set_selection_color(&s, blue);
+
+    /* Round trip. */
+    Camera cam;
+    camera_init(&cam);
+    Thumbnail thumb;
+    thumb.width = 0;
+    thumb.height = 0;
+
+    std::string error;
+    const char *path = "/tmp/obc_test_color.obc";
+    check(project_save(path, s, cam, thumb, &error), "save a coloured scene");
+
+    Scene loaded;
+    Camera loaded_cam;
+    camera_init(&loaded_cam);
+    check(project_load(path, &loaded, &loaded_cam, &error), "load it back");
+
+    const SceneNode *ls = scene_node(&loaded, solid);
+    const SceneNode *li = scene_node(&loaded, inner);
+    const SceneNode *lh = scene_node(&loaded, hole);
+    check(ls && vec3_length(vec3_sub(ls->color, blue)) < 1e-3f, "the solid kept its blue");
+    check(li && vec3_length(vec3_sub(li->color, red)) < 1e-3f, "the group's child kept its red");
+    check(lh && vec3_length(vec3_sub(lh->color, want_hole)) < 1e-3f,
+          "an untouched hole kept the default");
+
+    /* Copy and paste carries it, since a fragment is whole nodes. */
+    std::vector<SceneNode> fragment;
+    std::vector<int> ids;
+    ids.push_back(solid);
+    scene_copy_subtrees(&s, ids, &fragment);
+    check(!fragment.empty() && vec3_length(vec3_sub(fragment[0].color, blue)) < 1e-6f,
+          "a copied node carries its colour");
+}
+
 /* STL export, including a group exported in merged state. */
 static void test_stl_export(void) {
     printf("STL export\n");
@@ -1388,12 +1714,15 @@ int main(void) {
     test_thin_walls();
     test_text();
     test_bevel();
+    test_bevel_complex();
+    test_boolean_outline();
     test_polyhedron();
     test_copy_paste();
     test_repair_fixes_defects();
     test_merge();
     test_scene_merge_roundtrip();
     test_project_roundtrip();
+    test_color();
     test_stl_export();
     test_stl_import();
     test_svg_import();

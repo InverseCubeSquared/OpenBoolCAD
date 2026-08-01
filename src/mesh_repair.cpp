@@ -13,7 +13,7 @@
  * lattice at the tolerance plus a scan of the 26 neighbouring cells catches the
  * pairs that straddle a cell boundary, which a plain quantised key misses.
  */
-#define WELD_TOLERANCE 1e-4f // mm; far below any dimension that matters in CAD
+#define WELD_TOLERANCE OBC_WELD_MM
 
 typedef std::array<int64_t, 3> CellKey;
 
@@ -159,14 +159,35 @@ static void fix_winding(const std::vector<Vec3> &positions, std::vector<uint32_t
             }
         }
 
-        /* Signed volume of this shell about the origin. */
+        /*
+         * Signed volume of this shell, measured from one of its own vertices
+         * and summed in double.
+         *
+         * Taking it about the world origin in single precision is the obvious
+         * way to write this and it is wrong wherever the shell does not sit at
+         * the origin: for a small shell far out, every triple product is large
+         * and they cancel down to a result several orders of magnitude smaller
+         * than the rounding error, so the sign that comes out is noise - and a
+         * wrong sign here turns a perfectly good shell inside out. Bevel
+         * cutters, which are small and sit wherever the edge is, were exactly
+         * that case.
+         */
+        Vec3 origin = positions[(*tris)[component[0] * 3 + 0]];
         double volume = 0.0;
         for (size_t i = 0; i < component.size(); ++i) {
             uint32_t t = component[i];
-            Vec3 a = positions[(*tris)[t * 3 + 0]];
-            Vec3 b = positions[(*tris)[t * 3 + 1]];
-            Vec3 c = positions[(*tris)[t * 3 + 2]];
-            volume += (double)vec3_dot(a, vec3_cross(b, c)) / 6.0;
+            double ax = positions[(*tris)[t * 3 + 0]].x - origin.x;
+            double ay = positions[(*tris)[t * 3 + 0]].y - origin.y;
+            double az = positions[(*tris)[t * 3 + 0]].z - origin.z;
+            double bx = positions[(*tris)[t * 3 + 1]].x - origin.x;
+            double by = positions[(*tris)[t * 3 + 1]].y - origin.y;
+            double bz = positions[(*tris)[t * 3 + 1]].z - origin.z;
+            double cx = positions[(*tris)[t * 3 + 2]].x - origin.x;
+            double cy = positions[(*tris)[t * 3 + 2]].y - origin.y;
+            double cz = positions[(*tris)[t * 3 + 2]].z - origin.z;
+            volume += (ax * (by * cz - bz * cy) +
+                       ay * (bz * cx - bx * cz) +
+                       az * (bx * cy - by * cx)) / 6.0;
         }
         if (volume < 0.0) {
             for (size_t i = 0; i < component.size(); ++i) flip_triangle(tris, component[i]);

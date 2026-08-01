@@ -42,6 +42,20 @@ bool csg_merge(const std::vector<Mesh> &positives,
                const std::vector<Mesh> &negatives,
                Mesh *out, std::string *error, std::string *repair_note);
 
+/*
+ * The same union-then-subtract as csg_merge, without the thin wall pass.
+ *
+ * For an operation whose own detail is finer than OBC_MIN_WALL_MM. A fillet is
+ * the case that matters: at a 0.4 mm radius and six segments the facet chords
+ * are about 14 microns, against a 10 micron wall tolerance, so the cleanup eats
+ * the arc and hands back something closer to a chamfer than the bevel that was
+ * asked for. Debris removal belongs to the merge the user asked for, not to
+ * every boolean the editor runs on its own account.
+ */
+bool csg_boolean(const std::vector<Mesh> &positives,
+                 const std::vector<Mesh> &negatives,
+                 Mesh *out, std::string *error);
+
 /* Repairs a mesh in place, returning true when it came out a closed solid. */
 bool csg_make_solid(Mesh *mesh, std::string *note);
 

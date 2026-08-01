@@ -43,6 +43,17 @@ struct RenderOverlay {
     bool show_selection;
     Bounds selection;     // plane coordinates
 
+    /*
+     * Suppresses the blue selection tint on the meshes themselves, while the
+     * selection box still draws.
+     *
+     * The colour picker needs it: whatever is being coloured is by definition
+     * selected, so the tint would paint over the very thing the dialog is for
+     * and the live preview would show nothing. The box is enough to say what is
+     * selected while the picker is up.
+     */
+    bool show_true_colors;
+
     bool show_ghost;      // where a moved selection came from
     Bounds ghost;         // plane coordinates
 

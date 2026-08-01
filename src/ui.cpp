@@ -85,6 +85,10 @@ void ui_init(UiState *ui) {
     ui->bevel_menu_open = false;
     ui->bevel_radius = 1.0f;
     ui->bevel_segments = 8;
+    ui->color_open = false;
+    ui->color_active = false;
+    ui->color_value = OBC_COLOR_SOLID;
+    ui->color_before.clear();
     primitive_resolution_init(&ui->resolution);
     ui->resolution_menu_kind = -1;
     ui->resolution_menu_polarity = POLARITY_POSITIVE;
@@ -234,6 +238,7 @@ void ui_draw(App *app) {
     ui_draw_text_options(app);
     ui_draw_polyhedron_options(app);
     ui_draw_bevel_options(app);
+    ui_draw_color_options(app);
     /* After the panes, so it floats over them rather than under. */
     ui_draw_help(app);
 
@@ -1270,6 +1275,9 @@ void ui_draw_menubar(App *app) {
         }
         if (ImGui::MenuItem("Invert Polarity", "I", false, !app->scene.selection.empty())) {
             scene_invert_selection_polarity(&app->scene);
+        }
+        if (ImGui::MenuItem("Colour...", "C", false, !app->scene.selection.empty())) {
+            ui_action_choose_color(app);
         }
         if (ImGui::MenuItem("Delete", "Del", false, !app->scene.selection.empty())) {
             ui_action_delete_selection(app);

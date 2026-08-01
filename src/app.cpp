@@ -46,6 +46,8 @@ bool app_init(App *app) {
     app->running = false;
     app->window_w = 1600;
     app->window_h = 900;
+    app->fb_w = app->window_w;
+    app->fb_h = app->window_h;
     app->last_thumbnail_ms = 0;
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
@@ -163,11 +165,26 @@ static void app_frame(App *app) {
     /* Browser: picks up a page resize. Desktop: nothing. */
     platform_frame_begin(app);
 
-    SDL_GL_GetDrawableSize(app->window, &app->window_w, &app->window_h);
-
     obc_imgui_renderer_new_frame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
+
+    /*
+     * The layout size is taken from ImGui rather than from SDL, and after
+     * NewFrame rather than before, so it is by construction the same space
+     * ImGui just laid itself out in. Reading the *drawable* size here instead
+     * is what broke the browser build on a scaled display: every pane is
+     * positioned in ImGui units, so feeding it pixels pushed the bookshelf off
+     * the canvas and left the 3D view drawing outside its own rectangle.
+     */
+    ImGuiIO &frame_io = ImGui::GetIO();
+    app->window_w = (int)frame_io.DisplaySize.x;
+    app->window_h = (int)frame_io.DisplaySize.y;
+    SDL_GL_GetDrawableSize(app->window, &app->fb_w, &app->fb_h);
+    if (app->fb_w <= 0 || app->fb_h <= 0) {
+        app->fb_w = app->window_w;
+        app->fb_h = app->window_h;
+    }
 
     ui_draw(app);
 
@@ -175,7 +192,7 @@ static void app_frame(App *app) {
 
     /* The whole window is cleared first, then the 3D view redraws its own
      * rectangle; ImGui panels land on top. */
-    glViewport(0, 0, app->window_w, app->window_h);
+    glViewport(0, 0, app->fb_w, app->fb_h);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0.94f, 0.94f, 0.94f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -200,7 +217,7 @@ static void app_frame(App *app) {
         render_capture_thumbnail(app->ui.viewport, 256, &app->thumbnail);
     }
 
-    glViewport(0, 0, app->window_w, app->window_h);
+    glViewport(0, 0, app->fb_w, app->fb_h);
     obc_imgui_renderer_render(ImGui::GetDrawData());
 
     SDL_GL_SwapWindow(app->window);

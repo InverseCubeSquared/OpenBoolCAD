@@ -132,6 +132,11 @@ TEST_DEPS   := src/mesh.cpp src/workplane.cpp src/mesh_repair.cpp src/csg.cpp sr
 TEST_OBJ    := $(patsubst %.cpp,$(OBJDIR)/%.o,$(TEST_SRC) $(TEST_DEPS)) \
                $(patsubst %.cpp,$(OBJDIR)/%.o,$(MANIFOLD_SRC)) $(FONT_OBJ)
 
+# The test object needs its header deps too, or a change to a header it includes
+# leaves it stale and linked against a struct that has since changed shape - which
+# looks exactly like a geometry bug, right down to the runaway allocation.
+DEP += $(TEST_OBJ:.o=.d)
+
 $(TEST_TARGET): $(TEST_OBJ)
 	$(CXX) $(TEST_OBJ) -o $@ $(shell pkg-config --libs sqlite3 zlib gl) -lm
 

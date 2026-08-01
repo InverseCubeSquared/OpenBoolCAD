@@ -106,7 +106,11 @@ static const char *SCHEMA_SQL =
     "  id INTEGER PRIMARY KEY, parent INTEGER, kind INTEGER, name TEXT,"
     "  visible INTEGER, expanded INTEGER, merged INTEGER, polarity INTEGER,"
     "  px REAL, py REAL, pz REAL, rx REAL, ry REAL, rz REAL,"
-    "  sx REAL, sy REAL, sz REAL, ordinal INTEGER);"
+    "  sx REAL, sy REAL, sz REAL, ordinal INTEGER,"
+    /* Added after version 1. The reader asks the database whether these exist
+     * rather than trusting the version, so a file written before colours simply
+     * loads with the defaults. */
+    "  cr REAL, cg REAL, cb REAL);"
     /* Normals are not stored: they are recomputed from the triangles on load,
      * which halves the mesh payload and keeps the two in agreement. */
     "CREATE TABLE mesh (node_id INTEGER PRIMARY KEY, vertices BLOB, edges BLOB);"
@@ -170,7 +174,7 @@ static bool write_scene(sqlite3 *db, const Scene &scene, const Camera &camera, s
 
     /* Nodes. The ordinal keeps sibling order stable, which the tree shows. */
     if (sqlite3_prepare_v2(db,
-            "INSERT INTO node VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL)
+            "INSERT INTO node VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL)
         != SQLITE_OK) {
         if (error) *error = "Could not write nodes.";
         return false;
@@ -211,6 +215,9 @@ static bool write_scene(sqlite3 *db, const Scene &scene, const Camera &camera, s
         sqlite3_bind_double(st, 16, n.scale.y);
         sqlite3_bind_double(st, 17, n.scale.z);
         sqlite3_bind_int(st, 18, ordinal);
+        sqlite3_bind_double(st, 19, n.color.x);
+        sqlite3_bind_double(st, 20, n.color.y);
+        sqlite3_bind_double(st, 21, n.color.z);
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             if (error) *error = "Could not write a node.";
@@ -411,6 +418,31 @@ bool project_read_thumbnail(const char *path, Thumbnail *out, std::string *error
     return gzip_inflate(parts.thumb, parts.thumb_len, &out->rgb, error);
 }
 
+/*
+ * Whether a column is actually in the file, asked of the database rather than
+ * inferred from the version number.
+ *
+ * A field added to the schema has to load from files written before it existed,
+ * and the version in the container header only says what wrote the file - it
+ * cannot say what an older writer happened to include. Asking the table is
+ * self-describing and cannot get out of step with the schema above.
+ */
+static bool column_exists(sqlite3 *db, const char *table, const char *column) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return false;
+
+    bool found = false;
+    while (!found && sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        if (name && strcmp((const char *)name, column) == 0) found = true;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 static bool read_scene(sqlite3 *db, Scene *scene, Camera *camera, std::string *error) {
     scene_init(scene);
 
@@ -434,15 +466,20 @@ static bool read_scene(sqlite3 *db, Scene *scene, Camera *camera, std::string *e
         n.expanded = true;
         n.merged = false;
         n.polarity = POLARITY_POSITIVE;
+        n.color = OBC_COLOR_SOLID;
         n.position = vec3(0.0f, 0.0f, 0.0f);
         n.rotation = vec3(0.0f, 0.0f, 0.0f);
         n.scale = vec3(1.0f, 1.0f, 1.0f);
     }
 
+    bool has_color = column_exists(db, "node", "cr");
+
     /* Ordered by ordinal so sibling order is rebuilt as it was saved. */
-    const char *node_sql =
-        "SELECT id,parent,kind,name,visible,expanded,merged,polarity,"
-        "px,py,pz,rx,ry,rz,sx,sy,sz FROM node ORDER BY parent, ordinal";
+    const char *node_sql = has_color
+        ? "SELECT id,parent,kind,name,visible,expanded,merged,polarity,"
+          "px,py,pz,rx,ry,rz,sx,sy,sz,cr,cg,cb FROM node ORDER BY parent, ordinal"
+        : "SELECT id,parent,kind,name,visible,expanded,merged,polarity,"
+          "px,py,pz,rx,ry,rz,sx,sy,sz FROM node ORDER BY parent, ordinal";
     if (sqlite3_prepare_v2(db, node_sql, -1, &st, NULL) != SQLITE_OK) {
         if (error) *error = "Project database is missing its node table.";
         return false;
@@ -471,6 +508,14 @@ static bool read_scene(sqlite3 *db, Scene *scene, Camera *camera, std::string *e
         n.scale = vec3((float)sqlite3_column_double(st, 14),
                        (float)sqlite3_column_double(st, 15),
                        (float)sqlite3_column_double(st, 16));
+        if (has_color) {
+            n.color = vec3((float)sqlite3_column_double(st, 17),
+                           (float)sqlite3_column_double(st, 18),
+                           (float)sqlite3_column_double(st, 19));
+        } else {
+            /* Written before colours existed, so give it what it drew as. */
+            n.color = n.polarity == POLARITY_NEGATIVE ? OBC_COLOR_HOLE : OBC_COLOR_SOLID;
+        }
         if (n.kind == NODE_DELETED) n.kind = NODE_OBJECT; // never stored, but be safe
         order.push_back(id);
     }

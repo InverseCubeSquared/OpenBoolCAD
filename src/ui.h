@@ -238,6 +238,17 @@ struct UiState {
     float bevel_radius;
     int bevel_segments;
 
+    /*
+     * Colour picker. "C" opens it on the selection's current colour and edits
+     * live, so the 3D view shows the colour while it is being chosen; the
+     * selection's colour before the dialog opened is kept so Cancel can put it
+     * back without an undo step.
+     */
+    bool color_open;                  // one frame, to open the popup
+    bool color_active;                // the whole time the popup is up
+    Vec3 color_value;
+    std::vector<Vec3> color_before;   // one per node, in scene id order
+
     /* Set when the next frame should grab the 3D view for the project preview,
      * which can only be read back before the buffer swap. */
     bool want_thumbnail;
@@ -301,6 +312,10 @@ void ui_bevel_refresh(App *app);
 void ui_bevel_pick(App *app, float region_w, float region_h, float sx, float sy, bool add);
 void ui_bevel_update_hover(App *app, float region_w, float region_h, float sx, float sy);
 void ui_draw_bevel_options(App *app);
+
+/* Colour picker, opened with C. */
+void ui_action_choose_color(App *app);
+void ui_draw_color_options(App *app);
 void ui_action_apply_bevel(App *app);
 void ui_action_delete_selection(App *app);
 void ui_action_copy(App *app);

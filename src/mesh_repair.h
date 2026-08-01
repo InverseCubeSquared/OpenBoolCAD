@@ -19,6 +19,17 @@
  * unambiguous answer and reports the rest instead of guessing.
  */
 
+/*
+ * How close two vertices have to be before this pass treats them as one.
+ *
+ * Far below any dimension that matters in CAD, but not below what a boolean
+ * backend working in double precision can produce, which is why csg.cpp knows
+ * about it too: a result carrying edges shorter than this welds shut here, and
+ * the triangles those edges belonged to collapse and get dropped, tearing a
+ * hole in a mesh that was closed when it arrived. The two have to agree.
+ */
+#define OBC_WELD_MM 1e-4f
+
 struct IndexedMesh {
     std::vector<Vec3> positions;
     std::vector<uint32_t> tris; // 3 indices per triangle

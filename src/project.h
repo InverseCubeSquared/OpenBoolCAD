@@ -31,7 +31,13 @@
  * stopped and any earlier merge still be undone.
  */
 
-#define OBC_PROJECT_VERSION 1
+/*
+ * 2 added per-node colour. The reader does not key off this: it asks the
+ * database which columns are there, so a version 1 file loads with the colours
+ * its nodes used to draw in. The number is here so a *newer* file can still be
+ * refused outright by split_container.
+ */
+#define OBC_PROJECT_VERSION 2
 
 struct Thumbnail {
     int width;

@@ -82,12 +82,20 @@ static int bevel_nearest(const App *app, float vw, float vh, float sx, float sy)
     int best = -1;
     float best_dist = BEVEL_PICK_RADIUS;
     for (size_t i = 0; i < ui.bevel_edges.size(); ++i) {
-        Vec3 a = scene_world_point(&app->scene, ui.bevel_node, ui.bevel_edges[i].a);
-        Vec3 b = scene_world_point(&app->scene, ui.bevel_node, ui.bevel_edges[i].b);
-        float d = segment_distance(app, vw, vh, a, b, sx, sy);
-        if (d <= best_dist) {
-            best_dist = d;
-            best = (int)i;
+        /* An edge is a whole run - a cylinder rim is one of them - so the whole
+         * polyline is tested and one click takes the lot. */
+        const BevelEdge &edge = ui.bevel_edges[i];
+        size_t count = edge.points.size();
+        size_t steps = edge.closed ? count : (count > 0 ? count - 1 : 0);
+        for (size_t s = 0; s < steps; ++s) {
+            Vec3 a = scene_world_point(&app->scene, ui.bevel_node, edge.points[s]);
+            Vec3 b = scene_world_point(&app->scene, ui.bevel_node,
+                                       edge.points[(s + 1) % count]);
+            float d = segment_distance(app, vw, vh, a, b, sx, sy);
+            if (d <= best_dist) {
+                best_dist = d;
+                best = (int)i;
+            }
         }
     }
     return best;

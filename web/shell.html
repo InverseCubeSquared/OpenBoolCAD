@@ -74,13 +74,17 @@ var Module = {
   }
 };
 
-/* Backing store starts at the window size; the C side keeps it there. */
-function sizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-sizeCanvas();
-window.addEventListener('resize', sizeCanvas);
+/*
+ * The backing store is deliberately not set here.
+ *
+ * SDL owns it: platform.cpp reads the canvas CSS size back each frame and calls
+ * SDL_SetWindowSize, which sizes the backing store for the display scale. This
+ * used to set canvas.width to window.innerWidth, which is CSS pixels, so on any
+ * display not at 100% the two fought every resize - one of them writing the
+ * scaled size and the other writing the unscaled one. CSS above already keeps
+ * the element filling the page, which is the only part the page is responsible
+ * for.
+ */
 </script>
 
 {{{ SCRIPT }}}

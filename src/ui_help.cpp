@@ -66,7 +66,8 @@ static const HelpKey KEYS_SELECT[] = {
     { "A",                 "Select every visible object." },
     { "Esc",               "Clear the selection." },
     { "Del",               "Delete the selection." },
-    { "I",                 "Invert polarity: solid becomes hole, hole becomes solid." }
+    { "I",                 "Invert polarity: solid becomes hole, hole becomes solid." },
+    { "C",                 "Colour the selection. On a group it colours everything inside." }
 };
 
 static const HelpKey KEYS_EDIT[] = {
@@ -81,7 +82,9 @@ static const HelpKey KEYS_EDIT[] = {
     { "Left / right click (bevel)", "Pick an edge, or drop one again." },
     { "Shift + B",         "Set the bevel amount and how round it is, then apply." },
     { "Shift + drag a ring", "Snap the rotation to 15 degrees." },
-    { "Shift + click (rotate mode)", "Pin the rotation origin to that point. Esc unpins it." },
+    { "Shift + right click (rotate mode)", "Pin the rotation origin to that point. Esc unpins "
+                           "it. The right button, because shift on the left one is already "
+                           "the snap." },
     { "[ and ]",           "Halve or double the snap grid." },
     { "Esc",               "Backs out one step at a time: plane picking, then the align or "
                            "mirror tool, then a pinned rotation origin, then the transform "

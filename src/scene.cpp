@@ -28,6 +28,7 @@ static int scene_new_node(Scene *s, int parent, NodeKind kind, const char *name)
     n.expanded = true;
     n.merged = false;
     n.polarity = POLARITY_POSITIVE;
+    n.color = OBC_COLOR_SOLID;
     n.position = vec3(0.0f, 0.0f, 0.0f);
     n.rotation = vec3(0.0f, 0.0f, 0.0f);
     n.scale = vec3(1.0f, 1.0f, 1.0f);
@@ -92,6 +93,9 @@ int scene_add_object(Scene *s, int parent, const char *name, const Mesh &mesh, P
     int id = scene_new_node(s, parent, NODE_OBJECT, name);
     s->nodes[id].mesh = mesh;
     s->nodes[id].polarity = polarity;
+    /* The default follows the polarity, so a hole still arrives grey and the
+     * view looks the way it did before colours existed. */
+    s->nodes[id].color = polarity == POLARITY_NEGATIVE ? OBC_COLOR_HOLE : OBC_COLOR_SOLID;
     return id;
 }
 
@@ -349,6 +353,55 @@ void scene_invert_selection_polarity(Scene *s) {
         if (!n) continue;
         n->polarity = (n->polarity == POLARITY_POSITIVE) ? POLARITY_NEGATIVE : POLARITY_POSITIVE;
     }
+}
+
+/* Colour */
+
+static int color_subtree(Scene *s, int id, Vec3 color) {
+    SceneNode *n = scene_node(s, id);
+    if (!n) return 0;
+
+    n->color = color;
+    int touched = n->kind == NODE_OBJECT ? 1 : 0;
+    /* A merged node's children are history, not parts on screen; recolouring
+     * them would change what an unmerge hands back. */
+    if (!n->merged) {
+        for (size_t i = 0; i < n->children.size(); ++i) {
+            touched += color_subtree(s, n->children[i], color);
+        }
+    }
+    return touched;
+}
+
+int scene_set_selection_color(Scene *s, Vec3 color) {
+    int touched = 0;
+    for (size_t i = 0; i < s->selection.size(); ++i) {
+        touched += color_subtree(s, s->selection[i], color);
+    }
+    return touched;
+}
+
+/* First object at or under "id", which is the one whose colour represents a
+ * group in the picker. */
+static const SceneNode *first_object(const Scene *s, int id) {
+    const SceneNode *n = scene_node(s, id);
+    if (!n) return NULL;
+    if (n->kind == NODE_OBJECT) return n;
+    for (size_t i = 0; i < n->children.size(); ++i) {
+        const SceneNode *found = first_object(s, n->children[i]);
+        if (found) return found;
+    }
+    return NULL;
+}
+
+bool scene_selection_color(const Scene *s, Vec3 *out) {
+    const SceneNode *first = NULL;
+    for (size_t i = 0; i < s->selection.size() && !first; ++i) {
+        first = first_object(s, s->selection[i]);
+    }
+    if (!first) return false;
+    if (out) *out = first->color;
+    return true;
 }
 
 /* Transforms */

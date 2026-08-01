@@ -9,9 +9,9 @@ static const float COL_BG[3]        = { 1.00f, 1.00f, 1.00f };
 static const float COL_GRID_FINE[3] = { 0.78f, 0.90f, 0.95f };
 static const float COL_GRID_COARSE[3] = { 0.60f, 0.82f, 0.90f };
 static const float COL_GRID_EDGE[3] = { 0.42f, 0.75f, 0.87f };
-static const float COL_POSITIVE[3]  = { 0.68f, 0.74f, 0.80f };
+/* An object's own fill colour is on the node (see OBC_COLOR_SOLID in scene.h);
+ * only the selection tint is the renderer's to decide. */
 static const float COL_SELECTED[3]  = { 0.40f, 0.66f, 0.92f };
-static const float COL_NEGATIVE[3]  = { 0.55f, 0.55f, 0.55f };
 static const float COL_OUTLINE[3]   = { 0.05f, 0.05f, 0.05f };
 static const float COL_SEL_BOX[3]   = { 0.13f, 0.45f, 0.80f };
 
@@ -127,24 +127,34 @@ static void push_node_transform(const SceneNode &n) {
 }
 
 /* Selection state is inherited: selecting a group highlights its contents. */
-static void draw_subtree(const Scene &scene, int id, Polarity pass, bool inherited_selection) {
+static void draw_subtree(const Scene &scene, int id, Polarity pass, bool inherited_selection,
+                         bool true_colors) {
     const SceneNode *n = scene_node(&scene, id);
     if (!n || !n->visible) return;
 
-    bool selected = inherited_selection || scene_is_selected(&scene, id);
+    bool selected = !true_colors && (inherited_selection || scene_is_selected(&scene, id));
 
     push_node_transform(*n);
 
     if (n->kind == NODE_OBJECT && n->polarity == pass) {
+        /* The node's own colour, unless it is selected: that feedback has to
+         * win, or a selection would be invisible on a blue part. */
+        float own[3] = { n->color.x, n->color.y, n->color.z };
+        const float *base = selected ? COL_SELECTED : own;
+
         if (pass == POLARITY_POSITIVE) {
-            draw_mesh_solid(n->mesh, selected ? COL_SELECTED : COL_POSITIVE, 1.0f);
+            draw_mesh_solid(n->mesh, base, 1.0f);
             draw_mesh_outline(n->mesh);
         } else {
-            /* Negative volumes read as transparent grey and must not occlude
-             * what sits behind them, so depth writes stay off. */
+            /*
+             * What makes a negative read as negative is that you can see
+             * through it, not its hue - so a coloured hole keeps its colour and
+             * still draws at low alpha with depth writes off, never occluding
+             * what sits behind it.
+             */
             glEnable(GL_BLEND);
             glDepthMask(GL_FALSE);
-            draw_mesh_solid(n->mesh, selected ? COL_SELECTED : COL_NEGATIVE, 0.35f);
+            draw_mesh_solid(n->mesh, base, 0.35f);
             glDepthMask(GL_TRUE);
             glDisable(GL_BLEND);
             draw_mesh_outline(n->mesh);
@@ -154,7 +164,7 @@ static void draw_subtree(const Scene &scene, int id, Polarity pass, bool inherit
     /* A merged node's children are its history; only the result mesh draws. */
     if (!n->merged) {
         for (size_t i = 0; i < n->children.size(); ++i) {
-            draw_subtree(scene, n->children[i], pass, selected);
+            draw_subtree(scene, n->children[i], pass, selected, true_colors);
         }
     }
 
@@ -205,6 +215,7 @@ void render_overlay_init(RenderOverlay *o) {
     o->show_plane = false;
     o->show_selection = false;
     o->selection = bounds_empty();
+    o->show_true_colors = false;
     o->show_ghost = false;
     o->ghost = bounds_empty();
     o->show_scale_grips = false;
@@ -667,10 +678,10 @@ void render_frame(const Scene &scene, const Camera &camera, ViewportRect vp,
     draw_grid(snap_grid_mm);
 
     for (size_t i = 0; i < scene.roots.size(); ++i) {
-        draw_subtree(scene, scene.roots[i], POLARITY_POSITIVE, false);
+        draw_subtree(scene, scene.roots[i], POLARITY_POSITIVE, false, overlay.show_true_colors);
     }
     for (size_t i = 0; i < scene.roots.size(); ++i) {
-        draw_subtree(scene, scene.roots[i], POLARITY_NEGATIVE, false);
+        draw_subtree(scene, scene.roots[i], POLARITY_NEGATIVE, false, overlay.show_true_colors);
     }
 
     /* Editing furniture draws without depth testing so a grip is never buried

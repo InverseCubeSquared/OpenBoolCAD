@@ -753,6 +753,19 @@ static void drag_end(App *app) {
 
 /* Navigation and picking */
 
+/*
+ * Whether the next right click pins the rotation origin rather than orbiting.
+ *
+ * Only in rotate mode, and only with something selected - there is nothing to
+ * rotate about a pinned point otherwise, and shift + right drag has to keep
+ * orbiting everywhere else.
+ */
+static bool pivot_pick_armed(const App *app) {
+    return app->ui.mode == XFORM_ROTATE &&
+           ImGui::GetIO().KeyShift &&
+           !app->scene.selection.empty();
+}
+
 static void viewport_handle_navigation(App *app, ImVec2 region_min, ImVec2 region_size) {
     ImGuiIO &io = ImGui::GetIO();
 
@@ -766,7 +779,10 @@ static void viewport_handle_navigation(App *app, ImVec2 region_min, ImVec2 regio
     app->ui.viewport_hovered = hovered;
 
     if (ImGui::IsItemActive()) {
-        if (io.MouseDown[ImGuiMouseButton_Right]) {
+        /* While the pivot pick is armed the right button belongs to it, so a
+         * shaky hand between press and release turns the view instead of
+         * pinning where it was aimed. */
+        if (io.MouseDown[ImGuiMouseButton_Right] && !pivot_pick_armed(app)) {
             camera_orbit(&app->camera, -io.MouseDelta.x * 0.4f, io.MouseDelta.y * 0.4f);
         } else if (io.MouseDown[ImGuiMouseButton_Middle]) {
             camera_pan(&app->camera, io.MouseDelta.x, io.MouseDelta.y, (int)region_size.y);
@@ -917,34 +933,40 @@ static void viewport_handle_navigation(App *app, ImVec2 region_min, ImVec2 regio
         }
     }
 
+    /*
+     * Shift + right click pins the rotation origin.
+     *
+     * It used to be shift + *left* click, which collided with the modifier's
+     * other job in this mode: shift snaps a ring drag to 15 degrees, so holding
+     * it to snap and then clicking to release put the pivot wherever the cursor
+     * happened to be. The right button has no such second meaning here - it
+     * orbits, and orbiting is a drag - so a shift + right *click* is free.
+     */
+    if (pivot_pick_armed(app) && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        Vec3 origin, dir;
+        camera_screen_ray(app->camera, vw, vh, local.x, local.y, &origin, &dir);
+        float distance = 0.0f;
+        Vec3 point;
+        bool have = false;
+        /* The point on the model wins; failing that, the workplane under the
+         * cursor, so there is always somewhere to pin to. */
+        if (scene_pick(&app->scene, origin, dir, &distance) != OBC_NO_NODE) {
+            point = vec3_add(origin, vec3_mul(dir, distance));
+            have = true;
+        } else if (workplane_hit(app->camera, vw, vh, local.x, local.y, &point)) {
+            have = true;
+        }
+        if (have) {
+            app->ui.pivot_custom = true;
+            app->ui.pivot_point = point;
+            ui_set_status(app, "Rotation origin pinned. Esc restores the centre.", false);
+        }
+        return;
+    }
+
     bool extend = io.KeyShift || io.KeyCtrl;
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        /*
-         * Shift+click in rotate mode pins the pivot instead of extending the
-         * selection: the point clicked on the model wins, otherwise the point
-         * on the workplane under the cursor.
-         */
-        if (app->ui.mode == XFORM_ROTATE && io.KeyShift && !app->scene.selection.empty()) {
-            Vec3 origin, dir;
-            camera_screen_ray(app->camera, vw, vh, local.x, local.y, &origin, &dir);
-            float distance = 0.0f;
-            Vec3 point;
-            bool have = false;
-            if (scene_pick(&app->scene, origin, dir, &distance) != OBC_NO_NODE) {
-                point = vec3_add(origin, vec3_mul(dir, distance));
-                have = true;
-            } else if (workplane_hit(app->camera, vw, vh, local.x, local.y, &point)) {
-                have = true;
-            }
-            if (have) {
-                app->ui.pivot_custom = true;
-                app->ui.pivot_point = point;
-                ui_set_status(app, "Rotation origin pinned. Esc restores the centre.", false);
-            }
-            return;
-        }
-
         int handle = -1;
         int axis = -1;
         TransformMode mode = app->ui.mode;
@@ -1130,6 +1152,7 @@ static void viewport_handle_keys(App *app, ImVec2 region_size) {
 
     if (ImGui::IsKeyPressed(ImGuiKey_A, false)) scene_select_all_visible(&app->scene);
     if (ImGui::IsKeyPressed(ImGuiKey_I, false)) scene_invert_selection_polarity(&app->scene);
+    if (ImGui::IsKeyPressed(ImGuiKey_C, false)) ui_action_choose_color(app);
 
     /* Transform modes. Both keys toggle, so the same key returns to move. */
     if (ImGui::IsKeyPressed(ImGuiKey_S, false)) ui_set_mode(app, XFORM_SCALE);
@@ -1563,6 +1586,14 @@ void ui_build_overlay(const App *app, RenderOverlay *out) {
     out->show_selection = true;
     out->selection = sel;
 
+    /* While the colour picker is up the meshes draw in their own colours, since
+     * the thing being coloured is necessarily selected and the blue tint would
+     * hide every change being made. The box still says what is selected. */
+    if (ui.color_active) {
+        out->show_true_colors = true;
+        return; // no grips either: nothing is draggable behind a modal
+    }
+
     /* Align and mirror replace the transform gizmos while they are up: showing
      * both at once would put two sets of grabbable things in the same space. */
     if (ui.align_active) {
@@ -1636,8 +1667,7 @@ void ui_build_overlay(const App *app, RenderOverlay *out) {
     if (ui.mode == XFORM_BEVEL && ui.bevel_node != OBC_NO_NODE) {
         out->show_bevel = true;
         for (size_t i = 0; i < ui.bevel_edges.size(); ++i) {
-            Vec3 a = scene_world_point(&app->scene, ui.bevel_node, ui.bevel_edges[i].a);
-            Vec3 b = scene_world_point(&app->scene, ui.bevel_node, ui.bevel_edges[i].b);
+            const BevelEdge &edge = ui.bevel_edges[i];
 
             bool chosen = false;
             for (size_t k = 0; k < ui.bevel_selected.size(); ++k) {
@@ -1646,8 +1676,16 @@ void ui_build_overlay(const App *app, RenderOverlay *out) {
             std::vector<Vec3> *dst = chosen ? &out->bevel_chosen
                                    : ((int)i == ui.bevel_hover ? &out->bevel_hover
                                                                : &out->bevel_lines);
-            dst->push_back(a);
-            dst->push_back(b);
+
+            /* One edge is a whole run, so it draws as a polyline; a ring closes
+             * back on its first point. */
+            size_t count = edge.points.size();
+            size_t steps = edge.closed ? count : (count > 0 ? count - 1 : 0);
+            for (size_t s = 0; s < steps; ++s) {
+                dst->push_back(scene_world_point(&app->scene, ui.bevel_node, edge.points[s]));
+                dst->push_back(scene_world_point(&app->scene, ui.bevel_node,
+                                                 edge.points[(s + 1) % count]));
+            }
         }
         return; // the transform grips would only clutter the edge set
     }
@@ -1685,11 +1723,22 @@ void ui_draw_viewport(App *app) {
     float height = (float)app->window_h - top;
     if (width < 1.0f) width = 1.0f;
 
-    /* GL viewport rect, y measured from the bottom of the window. */
-    app->ui.viewport.x = (int)left;
+    /*
+     * GL viewport rect, y measured from the bottom of the window.
+     *
+     * The layout above is in ImGui units; this is the one thing that has to be
+     * in real pixels, so it is scaled by the display scale on the way out. The
+     * two are the same at 100% and differ by 1.5x on a Windows desktop at 150%
+     * - laying out in one and drawing in the other put the 3D view outside its
+     * own rectangle and the bookshelf off the side of the canvas.
+     */
+    float sx = app->window_w > 0 ? (float)app->fb_w / (float)app->window_w : 1.0f;
+    float sy = app->window_h > 0 ? (float)app->fb_h / (float)app->window_h : 1.0f;
+
+    app->ui.viewport.x = (int)(left * sx);
     app->ui.viewport.y = 0;
-    app->ui.viewport.w = (int)width;
-    app->ui.viewport.h = (int)height;
+    app->ui.viewport.w = (int)(width * sx);
+    app->ui.viewport.h = (int)(height * sy);
 
     move_ref_validate(app);
 

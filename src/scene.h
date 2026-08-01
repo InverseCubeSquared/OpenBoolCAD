@@ -30,6 +30,15 @@ enum Polarity {
  * "merged" is set, the children do not render, pick, or show in the tree -
  * everything downstream keys off scene_node_is_merged().
  */
+/*
+ * Display colours. A node's default depends on its polarity, so placing a
+ * primitive looks exactly as it did before anyone thought about colour: a solid
+ * is the pale blue-grey, a hole the neutral grey it draws transparent in.
+ * Selection still overrides both, since that feedback has to win.
+ */
+#define OBC_COLOR_SOLID vec3(0.68f, 0.74f, 0.80f)
+#define OBC_COLOR_HOLE  vec3(0.55f, 0.55f, 0.55f)
+
 struct SceneNode {
     int id;
     int parent;
@@ -39,6 +48,7 @@ struct SceneNode {
     bool expanded;
     bool merged;
     Polarity polarity;
+    Vec3 color; // rgb, 0..1
 
     Vec3 position;
     Vec3 rotation; // degrees, applied Z then Y then X
@@ -100,6 +110,21 @@ bool scene_is_effectively_visible(const Scene *s, int id);
 
 void scene_set_visible(Scene *s, int id, bool visible);
 void scene_invert_selection_polarity(Scene *s);
+
+/*
+ * Colour of the selection.
+ *
+ * Applied down each selected subtree, because a group has no mesh of its own -
+ * colouring one has to mean colouring what is in it, or the action would do
+ * nothing on exactly the node the tree makes easiest to select. Returns how
+ * many objects it reached, so the caller can report an edit that hit nothing.
+ */
+int scene_set_selection_color(Scene *s, Vec3 color);
+
+/* The colour to show for the current selection: the shared one where every
+ * object in it agrees, and the first object's otherwise, so the picker opens on
+ * something recognisable rather than on a default. */
+bool scene_selection_color(const Scene *s, Vec3 *out);
 
 /* World transform helpers. Nested transforms compose through the parents. */
 Vec3 scene_world_point(const Scene *s, int id, Vec3 local);

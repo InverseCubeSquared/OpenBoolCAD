@@ -41,6 +41,17 @@ void undo_init(UndoStack *u);
  * way it should read in the Edit menu ("Align", "Delete", "Move"). */
 void undo_record(UndoStack *u, const Scene &scene, const char *label);
 
+/*
+ * Throws away the newest snapshot without restoring it.
+ *
+ * For an action that has to record *before* it runs but can still be called
+ * off - the colour picker edits live, so it snapshots on open and drops that
+ * snapshot again on Cancel. Without this the history fills with steps that undo
+ * nothing, which is worse than no undo at all: the entry looks like a change
+ * was made.
+ */
+void undo_drop_last(UndoStack *u);
+
 /* Both return false when there is nothing to step to. The current scene is
  * handed in so it can be pushed onto the opposite stack. */
 bool undo_step_back(UndoStack *u, Scene *scene, std::string *label);
