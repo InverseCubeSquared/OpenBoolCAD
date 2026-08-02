@@ -40,21 +40,18 @@ static void app_apply_style(void) {
     c[ImGuiCol_HeaderActive]  = ImVec4(0.40f, 0.66f, 0.92f, 1.00f);
 }
 
-bool app_init(App *app) {
-    app->window = NULL;
-    app->gl_context = NULL;
-    app->running = false;
-    app->window_w = 1600;
-    app->window_h = 900;
-    app->fb_w = app->window_w;
-    app->fb_h = app->window_h;
-    app->last_thumbnail_ms = 0;
-
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
-        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-        return false;
-    }
-
+/*
+ * One attempt at a window and a GL context.
+ *
+ * Split out because the framebuffer we would like is not the only one worth
+ * having. Multisampling in particular is a nicety, and a driver that cannot
+ * offer it does not advertise a single matching visual - Mesa's softpipe is
+ * exactly that case, and asking for 4x there fails visual selection outright
+ * with "Couldn't find matching GLX visual". Everything else the editor needs is
+ * in the depth buffer, so the caller walks down to plainer framebuffers rather
+ * than refusing to start.
+ */
+static bool try_create_window(App *app, int msaa_samples, int depth_bits, int stencil_bits) {
 #if defined(__EMSCRIPTEN__)
     /* WebGL 1 is GLES 2.0. The fixed function calls the renderer makes are
      * emulated in gl_compat.cpp rather than forked out of render.cpp. */
@@ -67,25 +64,76 @@ bool app_init(App *app) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
 #endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, depth_bits);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, stencil_bits);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, msaa_samples > 0 ? 1 : 0);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa_samples);
 
     Uint32 window_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
     app->window = SDL_CreateWindow("OpenBoolCAD",
                                    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                    app->window_w, app->window_h, window_flags);
-    if (!app->window) {
-        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-        return false;
-    }
+    if (!app->window) return false;
 
     app->gl_context = SDL_GL_CreateContext(app->window);
     if (!app->gl_context) {
-        fprintf(stderr, "SDL_GL_CreateContext failed: %s\n", SDL_GetError());
+        /* The visual was accepted but the context was not, so the window has to
+         * go too - the next attempt asks for a different visual. */
+        SDL_DestroyWindow(app->window);
+        app->window = NULL;
         return false;
     }
+    return true;
+}
+
+bool app_init(App *app) {
+    app->window = NULL;
+    app->gl_context = NULL;
+    app->imgui_context = false;
+    app->imgui_sdl = false;
+    app->imgui_renderer = false;
+    app->running = false;
+    app->window_w = 1600;
+    app->window_h = 900;
+    app->fb_w = app->window_w;
+    app->fb_h = app->window_h;
+    app->last_thumbnail_ms = 0;
+
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return false;
+    }
+
+    /*
+     * Best framebuffer first, then plainer ones. A software rasteriser under a
+     * headless X server typically offers no multisample visual at all and may
+     * have no stencil, and none of that stops the editor working - only the
+     * depth buffer is load bearing.
+     */
+    static const struct { int msaa, depth, stencil; const char *what; } MODES[] = {
+        { 4, 24, 8, "4x multisampling" },
+        { 0, 24, 8, "no multisampling" },
+        { 0, 24, 0, "no multisampling, no stencil" },
+        { 0, 16, 0, "no multisampling, 16 bit depth" }
+    };
+    const int MODE_COUNT = (int)(sizeof(MODES) / sizeof(MODES[0]));
+
+    int mode = 0;
+    while (mode < MODE_COUNT &&
+           !try_create_window(app, MODES[mode].msaa, MODES[mode].depth, MODES[mode].stencil)) {
+        mode += 1;
+    }
+    if (mode >= MODE_COUNT) {
+        fprintf(stderr, "Could not create a window with any framebuffer format: %s\n",
+                SDL_GetError());
+        return false;
+    }
+    if (mode > 0) {
+        /* Worth saying: the picture is correct but not identical, and this is
+         * the first thing to check if the edges look coarse. */
+        printf("Framebuffer: fell back to %s.\n", MODES[mode].what);
+    }
+
     SDL_GL_MakeCurrent(app->window, app->gl_context);
 #if !defined(__EMSCRIPTEN__)
     /* The browser paces us through requestAnimationFrame, and asking for a swap
@@ -101,6 +149,7 @@ bool app_init(App *app) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    app->imgui_context = true;
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = NULL; // no layout persistence until docking is wired up
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -127,10 +176,13 @@ bool app_init(App *app) {
         fprintf(stderr, "ImGui SDL2 backend init failed\n");
         return false;
     }
+    app->imgui_sdl = true;
+
     if (!obc_imgui_renderer_init()) {
         fprintf(stderr, "ImGui renderer backend init failed\n");
         return false;
     }
+    app->imgui_renderer = true;
 
     platform_init();
 
@@ -244,9 +296,15 @@ void app_run(App *app) {
 #endif
 
 void app_shutdown(App *app) {
-    obc_imgui_renderer_shutdown();
-    ImGui_ImplSDL2_Shutdown();
-    ImGui::DestroyContext();
+    /* Unwound in the order it was built, and only as far as it got: this runs
+     * on the failure path too, where the later stages never happened. */
+    if (app->imgui_renderer) obc_imgui_renderer_shutdown();
+    if (app->imgui_sdl) ImGui_ImplSDL2_Shutdown();
+    if (app->imgui_context) ImGui::DestroyContext();
+    app->imgui_renderer = false;
+    app->imgui_sdl = false;
+    app->imgui_context = false;
+
     obc_gl_shutdown();
 
     if (app->gl_context) SDL_GL_DeleteContext(app->gl_context);

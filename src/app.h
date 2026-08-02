@@ -18,6 +18,16 @@ struct App {
     bool running;
 
     /*
+     * How far init got. Shutdown has to mirror it exactly: every one of the
+     * ImGui teardown calls asserts if its half was never set up, so an init that
+     * stops early - no usable GL visual, say - would abort on the way out and
+     * bury the error message that explained why.
+     */
+    bool imgui_context;
+    bool imgui_sdl;
+    bool imgui_renderer;
+
+    /*
      * Two sizes, and they are not interchangeable.
      *
      * window_* is the coordinate space the UI is laid out in - ImGui's
