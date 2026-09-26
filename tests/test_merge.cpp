@@ -552,6 +552,11 @@ static void test_text(void) {
     check(!text_build(blank, &nothing, &blank_error), "empty text is refused");
 }
 
+/* No node scale stands between these meshes and the part: the bevel is measured
+ * in the same millimetres the mesh is built in. test_bevel_scaled covers the
+ * case where one does. */
+static const Vec3 unit_scale = vec3(1.0f, 1.0f, 1.0f);
+
 /* Bevelling: the volume has to go down by the right amount, the result has to
  * stay a solid, and a concave edge has to fill rather than cut. */
 static void test_bevel(void) {
@@ -559,7 +564,7 @@ static void test_bevel(void) {
 
     Mesh cube = mesh_make_cube(20.0f);
     std::vector<BevelEdge> edges;
-    bevel_collect_edges(cube, &edges);
+    bevel_collect_edges(cube, unit_scale, &edges);
 
     char label[220];
     snprintf(label, sizeof(label), "a cube offers %d bevellable edges", (int)edges.size());
@@ -578,7 +583,7 @@ static void test_bevel(void) {
 
     Mesh rounded;
     std::string error;
-    bool ok = bevel_apply(cube, edges, one, r, 16, &rounded, &error);
+    bool ok = bevel_apply(cube, edges, one, r, 16, unit_scale, &rounded, &error);
     check(ok, ok ? "one edge bevels" : error.c_str());
 
     if (ok) {
@@ -603,7 +608,7 @@ static void test_bevel(void) {
 
     /* One segment is a chamfer: a right prism, so exactly half the corner box. */
     Mesh chamfered;
-    if (bevel_apply(cube, edges, one, r, 1, &chamfered, &error)) {
+    if (bevel_apply(cube, edges, one, r, 1, unit_scale, &chamfered, &error)) {
         float removed = mesh_volume(cube) - mesh_volume(chamfered);
         float expected = 0.5f * r * r * 20.0f;
         snprintf(label, sizeof(label), "a one segment bevel is a chamfer (%.2f vs %.2f)",
@@ -620,7 +625,7 @@ static void test_bevel(void) {
 
     Mesh full;
     double t0 = now_ms();
-    ok = bevel_apply(cube, edges, all, 1.5f, 8, &full, &error);
+    ok = bevel_apply(cube, edges, all, 1.5f, 8, unit_scale, &full, &error);
     double ms = now_ms() - t0;
     snprintf(label, sizeof(label), "all twelve edges bevel in %.0f ms%s%s", ms,
              ok ? "" : ": ", ok ? "" : error.c_str());
@@ -649,7 +654,7 @@ static void test_bevel(void) {
     std::string merge_error, note;
     if (csg_merge(pos, std::vector<Mesh>(), &shape, &merge_error, &note)) {
         std::vector<BevelEdge> l_edges;
-        bevel_collect_edges(shape, &l_edges);
+        bevel_collect_edges(shape, unit_scale, &l_edges);
 
         int concave = 0;
         for (size_t i = 0; i < l_edges.size(); ++i) if (!l_edges[i].convex) concave += 1;
@@ -662,7 +667,7 @@ static void test_bevel(void) {
         }
 
         Mesh filled;
-        if (bevel_apply(shape, l_edges, inside, 1.5f, 8, &filled, &error)) {
+        if (bevel_apply(shape, l_edges, inside, 1.5f, 8, unit_scale, &filled, &error)) {
             IndexedMesh li;
             MeshRepairReport lr;
             check(mesh_repair(filled, &li, &lr), "the filleted L is a closed solid");
@@ -679,7 +684,7 @@ static void test_bevel(void) {
     /* Nothing selected is a refusal, not an empty result. */
     Mesh none_out;
     std::vector<int> none;
-    check(!bevel_apply(cube, edges, none, 1.0f, 8, &none_out, &error),
+    check(!bevel_apply(cube, edges, none, 1.0f, 8, unit_scale, &none_out, &error),
           "bevelling nothing is refused");
 }
 
@@ -709,6 +714,100 @@ static void bevel_survives_a_boolean(const Mesh &m, const char *what) {
 }
 
 /*
+ * A bevel on a stretched part.
+ *
+ * A node's scale sits between the mesh and the part the user sees, so a cube
+ * scaled 7.2x along x is drawn 144 x 20 x 20 while its mesh is still 20 mm
+ * cubed. Bevelling a vertical edge of it joins a 20 mm face to a 144 mm one,
+ * and the amount asked for has to be that many millimetres on both: built in
+ * the mesh's own space the slope comes out 7.2 times longer across the
+ * stretched face than across the other, which is not a fillet at all.
+ */
+static void test_bevel_scaled(void) {
+    printf("bevel under a non-uniform scale\n");
+
+    const float sx = 7.2f;
+    Vec3 scale = vec3(sx, 1.0f, 1.0f);
+    Mesh cube = mesh_make_cube(20.0f);
+
+    std::vector<BevelEdge> edges;
+    bevel_collect_edges(cube, scale, &edges);
+
+    /* The vertical edge at the +x +y corner: both ends at x = y = 10, running
+     * along z. It is the one between the 20 mm end face and the 144 mm side. */
+    int pick = -1;
+    for (size_t i = 0; i < edges.size() && pick < 0; ++i) {
+        const BevelEdge &e = edges[i];
+        if (e.points.size() != 2) continue;
+        bool corner = true;
+        for (int k = 0; k < 2; ++k) {
+            if (fabsf(e.points[k].x - 10.0f) > 1e-3f) corner = false;
+            if (fabsf(e.points[k].y - 10.0f) > 1e-3f) corner = false;
+        }
+        if (corner) pick = (int)i;
+    }
+
+    char label[220];
+    check(pick >= 0, "the stretched box offers its vertical corner edge");
+    if (pick < 0) return;
+
+    std::vector<int> one;
+    one.push_back(pick);
+
+    float r = 1.0f;
+    Mesh rounded;
+    std::string error;
+    if (!bevel_apply(cube, edges, one, r, 16, scale, &rounded, &error)) {
+        check(false, (std::string("scaled bevel: ") + error).c_str());
+        return;
+    }
+
+    /* The result stays in the mesh's own space, so the node keeps its scale and
+     * the part keeps its size. */
+    Vec3 size = bounds_size(mesh_bounds(rounded));
+    snprintf(label, sizeof(label), "the part is still 144 x 20 x 20 (%.2f x %.2f x %.2f)",
+             size.x * sx, size.y, size.z);
+    check(fabsf(size.x * sx - 144.0f) < 1e-2f && fabsf(size.y - 20.0f) < 1e-2f &&
+          fabsf(size.z - 20.0f) < 1e-2f, label);
+
+    /*
+     * How far the slope runs across each of the two faces, measured on the part
+     * rather than on the mesh. Both are r: that is what makes it a fillet.
+     */
+    float far_x = -1e9f;   // how far the 144 mm face (y = 10) still runs
+    float far_y = -1e9f;   // how far the 20 mm face (x = 72) still runs
+    for (size_t i = 0; i < rounded.vertices.size(); ++i) {
+        Vec3 v = rounded.vertices[i];
+        v.x *= sx;
+        /* Tight, or the arc's second point - a few thousandths off the face -
+         * counts as being on it and the slope measures short. */
+        if (fabsf(v.y - 10.0f) < 1e-3f && v.x > far_x) far_x = v.x;
+        if (fabsf(v.x - 72.0f) < 1e-3f && v.y > far_y) far_y = v.y;
+    }
+    float reach_long = 72.0f - far_x;
+    float reach_end = 10.0f - far_y;
+
+    snprintf(label, sizeof(label),
+             "the slope reaches %.3f mm across the 144 mm face and %.3f mm across the 20 mm one",
+             reach_long, reach_end);
+    check(fabsf(reach_long - r) < 0.05f && fabsf(reach_end - r) < 0.05f, label);
+
+    /* And the volume it took, on the part: a quarter cylinder of radius r along
+     * a 20 mm edge, the same figure the unscaled cube is checked against. */
+    float removed = (mesh_volume(cube) - mesh_volume(rounded)) * sx;
+    float expected = (1.0f - 3.14159265f / 4.0f) * r * r * 20.0f;
+    snprintf(label, sizeof(label), "removed %.3f mm3 of the part, expected about %.3f",
+             removed, expected);
+    check(fabsf(removed - expected) < 0.15f, label);
+
+    IndexedMesh indexed;
+    MeshRepairReport report;
+    check(mesh_repair(rounded, &indexed, &report),
+          "the bevelled stretched box is a closed solid");
+    bevel_survives_a_boolean(rounded, "stretched box");
+}
+
+/*
  * Curved and merged shapes, which is where one cutter per triangle edge came
  * apart. Three things are being checked, and they are the same three things:
  * a rim is one edge and not thirty-two, the sweep across it is a solid, and the
@@ -723,7 +822,7 @@ static void test_bevel_complex(void) {
      * the two rims each arrive as one ring. */
     Mesh cyl = mesh_make_cylinder(20.0f, 20.0f, 32);
     std::vector<BevelEdge> rims;
-    bevel_collect_edges(cyl, &rims);
+    bevel_collect_edges(cyl, unit_scale, &rims);
 
     snprintf(label, sizeof(label), "a cylinder offers %d edges, not one per facet",
              (int)rims.size());
@@ -741,7 +840,7 @@ static void test_bevel_complex(void) {
     float r = 1.5f;
     Mesh rounded;
     std::string error;
-    if (bevel_apply(cyl, rims, both, r, 8, &rounded, &error)) {
+    if (bevel_apply(cyl, rims, both, r, 8, unit_scale, &rounded, &error)) {
         IndexedMesh indexed;
         MeshRepairReport report;
         check(mesh_repair(rounded, &indexed, &report), "the rounded cylinder is a closed solid");
@@ -780,7 +879,7 @@ static void test_bevel_complex(void) {
     }
 
     std::vector<BevelEdge> edges;
-    bevel_collect_edges(merged, &edges);
+    bevel_collect_edges(merged, unit_scale, &edges);
 
     /* Far fewer edges than the mesh has triangle creases, because the collinear
      * runs came back as single edges. */
@@ -792,7 +891,7 @@ static void test_bevel_complex(void) {
     for (size_t i = 0; i < edges.size(); ++i) all.push_back((int)i);
 
     Mesh bevelled;
-    if (bevel_apply(merged, edges, all, 1.0f, 8, &bevelled, &error)) {
+    if (bevel_apply(merged, edges, all, 1.0f, 8, unit_scale, &bevelled, &error)) {
         IndexedMesh indexed;
         MeshRepairReport report;
         check(mesh_repair(bevelled, &indexed, &report),
@@ -806,7 +905,7 @@ static void test_bevel_complex(void) {
         /* And it can be bevelled again, which is the edit after the edit that
          * used to be where the damage finally showed up. */
         std::vector<BevelEdge> again;
-        bevel_collect_edges(bevelled, &again);
+        bevel_collect_edges(bevelled, unit_scale, &again);
         snprintf(label, sizeof(label), "a second pass finds %d edges to work on",
                  (int)again.size());
         check(!again.empty(), label);
@@ -828,7 +927,7 @@ static void test_bevel_complex(void) {
     Mesh shape;
     if (csg_merge(arms, std::vector<Mesh>(), &shape, &merge_error, &note)) {
         std::vector<BevelEdge> l_edges;
-        bevel_collect_edges(shape, &l_edges);
+        bevel_collect_edges(shape, unit_scale, &l_edges);
 
         std::vector<int> inside;
         float length = 0.0f;
@@ -843,7 +942,7 @@ static void test_bevel_complex(void) {
 
         float fillet_r = 1.5f;
         Mesh filled;
-        if (bevel_apply(shape, l_edges, inside, fillet_r, 8, &filled, &error)) {
+        if (bevel_apply(shape, l_edges, inside, fillet_r, 8, unit_scale, &filled, &error)) {
             float expected = (1.0f - 3.14159265f / 4.0f) * fillet_r * fillet_r * length;
             float gained = mesh_volume(filled) - mesh_volume(shape);
             snprintf(label, sizeof(label),
@@ -1714,6 +1813,7 @@ int main(void) {
     test_thin_walls();
     test_text();
     test_bevel();
+    test_bevel_scaled();
     test_bevel_complex();
     test_boolean_outline();
     test_polyhedron();

@@ -228,9 +228,13 @@ struct UiState {
     /*
      * Bevel tool. The edge list belongs to one object and is held in that
      * object's own space, so moving or turning the part does not invalidate it
-     * - only editing its geometry does, which is what bevel_node guards.
+     * - only editing its geometry does, which is what bevel_node guards, and
+     * rescaling it, which bevel_scale does: the chains carry the angles of the
+     * *scaled* part, so a stretch changes them even though the mesh is the one
+     * it always was.
      */
     int bevel_node;                  // node the edges were collected from
+    Vec3 bevel_scale;                // the scale they were collected at
     std::vector<BevelEdge> bevel_edges;
     std::vector<int> bevel_selected;
     int bevel_hover;                 // edge under the cursor, or -1

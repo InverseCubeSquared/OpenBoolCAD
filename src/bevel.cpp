@@ -28,6 +28,73 @@
 #define BEVEL_JOIN_COS 0.5f          // 60 degrees between matching normals
 #define BEVEL_TURN_COS 0.17f         // 80 degrees of turn in the chain
 
+/*
+ * Scaled space
+ *
+ * A node's scale is applied to its mesh downstream, so a cube stretched to
+ * 144 mm along one axis is still 20 mm long in its own coordinates. The bevel
+ * amount is a distance the user reads off the finished part, so the whole
+ * construction runs in the space the part is seen at - vertices multiplied by
+ * that scale - and the result is divided back out at the end. Built in the
+ * mesh's own space instead, the fillet is stretched along with the part: a long
+ * slow slope across the stretched face and almost nothing across the other.
+ *
+ * Working here rather than in the mesh's space also gets the dihedral angles
+ * right, and those decide what counts as an edge, which chains join, and how
+ * far the arc reaches along each face.
+ *
+ * The sign of the scale is dropped. A mirror does not change the size of a
+ * fillet, and staying in a right handed space keeps winding out of it.
+ */
+static Vec3 bevel_space(Vec3 scale) {
+    Vec3 s = vec3(fabsf(scale.x), fabsf(scale.y), fabsf(scale.z));
+    if (s.x < 1e-6f) s.x = 1.0f;
+    if (s.y < 1e-6f) s.y = 1.0f;
+    if (s.z < 1e-6f) s.z = 1.0f;
+    return s;
+}
+
+static Vec3 vec3_over(Vec3 a, Vec3 s) { return vec3(a.x / s.x, a.y / s.y, a.z / s.z); }
+
+/*
+ * A normal takes the inverse transpose, which for a diagonal scale is a divide
+ * by it - and it is not the same direction as the scaled vertices suggest: the
+ * face of a flattened box tilts the other way to its own normal.
+ */
+static void mesh_to_space(Mesh *m, Vec3 s) {
+    for (size_t i = 0; i < m->vertices.size(); ++i) {
+        m->vertices[i] = vec3_scaled(m->vertices[i], s);
+    }
+    for (size_t i = 0; i < m->normals.size(); ++i) {
+        m->normals[i] = vec3_normalized(vec3_over(m->normals[i], s));
+    }
+    for (size_t i = 0; i < m->edges.size(); ++i) {
+        m->edges[i] = vec3_scaled(m->edges[i], s);
+    }
+}
+
+static void mesh_from_space(Mesh *m, Vec3 s) {
+    for (size_t i = 0; i < m->vertices.size(); ++i) {
+        m->vertices[i] = vec3_over(m->vertices[i], s);
+    }
+    for (size_t i = 0; i < m->normals.size(); ++i) {
+        m->normals[i] = vec3_normalized(vec3_scaled(m->normals[i], s));
+    }
+    for (size_t i = 0; i < m->edges.size(); ++i) {
+        m->edges[i] = vec3_over(m->edges[i], s);
+    }
+}
+
+/* The chain as the cutter needs it: its points scaled up to meet the normals,
+ * which bevel_collect_edges already measured there. */
+static BevelEdge edge_to_space(const BevelEdge &e, Vec3 s) {
+    BevelEdge out = e;
+    for (size_t i = 0; i < out.points.size(); ++i) {
+        out.points[i] = vec3_scaled(out.points[i], s);
+    }
+    return out;
+}
+
 /* Topology */
 
 typedef std::pair<uint32_t, uint32_t> EdgeKey;
@@ -189,12 +256,16 @@ struct Neighbour {
     bool swap;
 };
 
-void bevel_collect_edges(const Mesh &mesh, std::vector<BevelEdge> *out) {
+void bevel_collect_edges(const Mesh &mesh, Vec3 scale, std::vector<BevelEdge> *out) {
     out->clear();
+
+    Vec3 s = bevel_space(scale);
+    Mesh scaled = mesh;
+    mesh_to_space(&scaled, s);
 
     std::vector<Vec3> pos;
     std::vector<RawEdge> raw;
-    collect_raw(mesh, &pos, &raw);
+    collect_raw(scaled, &pos, &raw);
     if (raw.empty()) return;
 
     std::vector<std::vector<int> > at_vertex(pos.size());
@@ -277,7 +348,11 @@ void bevel_collect_edges(const Mesh &mesh, std::vector<BevelEdge> *out) {
             chain.closed = closed;
             chain.convex = raw[steps[0]].convex;
             chain.points.reserve(verts.size());
-            for (size_t i = 0; i < verts.size(); ++i) chain.points.push_back(pos[verts[i]]);
+            /* Back into the mesh's own space: the points are what the viewport
+             * draws and picks against, and it applies the node transform. */
+            for (size_t i = 0; i < verts.size(); ++i) {
+                chain.points.push_back(vec3_over(pos[verts[i]], s));
+            }
 
             /* One true normal pair per segment, in the chain's own orientation:
              * "swapped" records where a link met its neighbour the other way
@@ -649,20 +724,23 @@ static float reach_factor(const BevelEdge &edge) {
     return worst;
 }
 
-static float chain_length(const BevelEdge &edge) {
+/* Measured in the scaled space, since that is where the radius is measured. */
+static float chain_length(const BevelEdge &edge, Vec3 s) {
     float total = 0.0f;
     size_t steps = edge.closed ? edge.points.size() : edge.points.size() - 1;
     for (size_t i = 0; i < steps; ++i) {
-        total += vec3_length(vec3_sub(edge.points[(i + 1) % edge.points.size()],
-                                      edge.points[i]));
+        Vec3 a = vec3_scaled(edge.points[(i + 1) % edge.points.size()], s);
+        Vec3 b = vec3_scaled(edge.points[i], s);
+        total += vec3_length(vec3_sub(a, b));
     }
     return total;
 }
 
 float bevel_max_radius(const Mesh &mesh, const std::vector<BevelEdge> &edges,
-                       const std::vector<int> &chosen) {
+                       const std::vector<int> &chosen, Vec3 scale) {
+    Vec3 s = bevel_space(scale);
     Bounds b = mesh_bounds(mesh);
-    Vec3 size = bounds_size(b);
+    Vec3 size = vec3_scaled(bounds_size(b), s);
     float smallest = size.x;
     if (size.y < smallest) smallest = size.y;
     if (size.z < smallest) smallest = size.z;
@@ -683,7 +761,7 @@ float bevel_max_radius(const Mesh &mesh, const std::vector<BevelEdge> &edges,
         /* A short run cannot carry a fillet wider than itself. A ring has no
          * ends, so nothing to run off. */
         if (!e.closed) {
-            float along = chain_length(e) * 0.45f;
+            float along = chain_length(e, s) * 0.45f;
             if (along < limit) limit = along;
         }
     }
@@ -696,7 +774,7 @@ float bevel_max_radius(const Mesh &mesh, const std::vector<BevelEdge> &edges,
 
 bool bevel_apply(const Mesh &mesh, const std::vector<BevelEdge> &edges,
                  const std::vector<int> &chosen, float radius, int segments,
-                 Mesh *out, std::string *error) {
+                 Vec3 scale, Mesh *out, std::string *error) {
     if (chosen.empty()) {
         if (error) *error = "Select at least one edge to bevel.";
         return false;
@@ -710,8 +788,15 @@ bool bevel_apply(const Mesh &mesh, const std::vector<BevelEdge> &edges,
 
     /* Clamped here as well as in the dialog, so no caller can reach the
      * boolean with a radius that has nowhere to go. */
-    float limit = bevel_max_radius(mesh, edges, chosen);
+    float limit = bevel_max_radius(mesh, edges, chosen, scale);
     if (radius > limit) radius = limit;
+
+    /* Cutters and solid alike are built at the size the part is drawn at, so
+     * the radius means the same thing on every face however the node is
+     * stretched. The result is divided back out below. */
+    Vec3 s = bevel_space(scale);
+    Mesh base = mesh;
+    mesh_to_space(&base, s);
 
     /*
      * Convex edges cut away and concave ones fill in, so they cannot go through
@@ -720,7 +805,7 @@ bool bevel_apply(const Mesh &mesh, const std::vector<BevelEdge> &edges,
      * against each other instead of fighting.
      */
     std::vector<Mesh> positives, negatives;
-    positives.push_back(mesh);
+    positives.push_back(base);
 
     int built = 0;
     for (size_t i = 0; i < chosen.size(); ++i) {
@@ -728,7 +813,8 @@ bool bevel_apply(const Mesh &mesh, const std::vector<BevelEdge> &edges,
         if (index < 0 || index >= (int)edges.size()) continue;
 
         Mesh cutter;
-        if (!build_cutter(edges[index], radius, segments, &cutter)) continue;
+        BevelEdge chain = edge_to_space(edges[index], s);
+        if (!build_cutter(chain, radius, segments, &cutter)) continue;
         if (cutter.vertices.empty()) continue;
 
         if (edges[index].convex) negatives.push_back(cutter);
@@ -764,6 +850,7 @@ bool bevel_apply(const Mesh &mesh, const std::vector<BevelEdge> &edges,
      */
     if (!csg_settle(&cut, error)) return false;
 
+    mesh_from_space(&cut, s);
     *out = cut;
     return true;
 }

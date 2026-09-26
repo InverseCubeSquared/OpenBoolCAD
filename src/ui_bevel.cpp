@@ -9,7 +9,13 @@
  *
  * Edges are collected in the object's own space and kept there, so moving or
  * turning the part does not invalidate the set - only editing its geometry
- * does, which is what bevel_node guards against.
+ * does, which is what bevel_node guards against, and rescaling it, which
+ * bevel_scale guards against.
+ *
+ * The scale goes to every bevel call. The amount in the dialog is millimetres
+ * on the finished part, and a node's scale sits between the mesh and the part:
+ * without it a face stretched to 144 mm gets a slope stretched to match, while
+ * the 20 mm face it meets barely slopes at all.
  *
  * Picking is in screen space, like every other gizmo here, because the edges
  * are drawn at a fixed pixel width and a fixed pixel radius is what matches
@@ -17,6 +23,24 @@
  */
 
 #define BEVEL_PICK_RADIUS 10.0f
+
+/*
+ * The scale the object is drawn at, down the whole parent chain, since a group
+ * can carry one too. A rotation between two scaled nodes shears the part and no
+ * per-axis figure describes that; nothing else in the editor handles that case
+ * either, and the product is right wherever the axes still line up.
+ */
+static Vec3 bevel_node_scale(const Scene *s, int id) {
+    Vec3 total = vec3(1.0f, 1.0f, 1.0f);
+    int walk = id;
+    while (walk != OBC_NO_NODE) {
+        const SceneNode *n = scene_node(s, walk);
+        if (!n) break;
+        total = vec3_scaled(total, n->scale);
+        walk = n->parent;
+    }
+    return total;
+}
 
 /* Which single object the tool works on: the bevel applies to one mesh, so a
  * group or a multi-selection has nothing to act on. */
@@ -39,13 +63,18 @@ void ui_bevel_refresh(App *app) {
         ui->bevel_hover = -1;
         return;
     }
-    if (id == ui->bevel_node) return; // already collected for this object
+    Vec3 scale = bevel_node_scale(&app->scene, id);
+    if (id == ui->bevel_node &&
+        vec3_length(vec3_sub(scale, ui->bevel_scale)) < 1e-6f) {
+        return; // already collected for this object, at this size
+    }
 
     const SceneNode *n = scene_node(&app->scene, id);
     ui->bevel_node = id;
+    ui->bevel_scale = scale;
     ui->bevel_selected.clear();
     ui->bevel_hover = -1;
-    bevel_collect_edges(n->mesh, &ui->bevel_edges);
+    bevel_collect_edges(n->mesh, scale, &ui->bevel_edges);
 
     char msg[160];
     snprintf(msg, sizeof(msg),
@@ -137,7 +166,8 @@ void ui_action_apply_bevel(App *app) {
     Mesh result;
     std::string error;
     if (!bevel_apply(n->mesh, ui->bevel_edges, ui->bevel_selected,
-                     ui->bevel_radius, ui->bevel_segments, &result, &error)) {
+                     ui->bevel_radius, ui->bevel_segments, ui->bevel_scale,
+                     &result, &error)) {
         ui_set_status(app, error.c_str(), true);
         return;
     }
@@ -190,7 +220,10 @@ void ui_draw_bevel_options(App *app) {
      * radius past the faces the edge sits between has no answer. */
     const SceneNode *n = scene_node(&app->scene, ui->bevel_node);
     float limit = 100.0f;
-    if (n) limit = bevel_max_radius(n->mesh, ui->bevel_edges, ui->bevel_selected);
+    if (n) {
+        limit = bevel_max_radius(n->mesh, ui->bevel_edges, ui->bevel_selected,
+                                 ui->bevel_scale);
+    }
     if (ui->bevel_radius < 0.01f) ui->bevel_radius = 0.01f;
     if (ui->bevel_radius > limit) ui->bevel_radius = limit;
 

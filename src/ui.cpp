@@ -79,6 +79,7 @@ void ui_init(UiState *ui) {
     polyhedron_params_init(&ui->poly_params);
     ui->poly_open = false;
     ui->bevel_node = OBC_NO_NODE;
+    ui->bevel_scale = vec3(1.0f, 1.0f, 1.0f);
     ui->bevel_edges.clear();
     ui->bevel_selected.clear();
     ui->bevel_hover = -1;
